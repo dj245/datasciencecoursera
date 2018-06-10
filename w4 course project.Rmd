@@ -1,0 +1,216 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "D. McNelly"
+date: "June 10, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Summary 
+The goal of this analysis is to predict a weight lifting activity based on instrument data.  Predictive models are built using the Random Forest, Gradiant Boosting, and Linear Discriminant Analysis methods.  The Random Forest model is found to be the most accurate method for predicting the activity in the validation data set, with an accuracy of 99%.  The R programming language, version 3.4.3, was used for performing all analyses.  
+
+## Dataset Source and Description
+The data comes from: http://groupware.les.inf.puc-rio.br/har.  The below two paragraphs are paraphrased from this website.
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Class A corresponds to the specified (correct) execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. It was ensured that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg).
+
+## Data Format 
+The training data is available at https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The training dataset include 160 variables and 19622 observations.  During the analysis, this training set is randomly split into two datasets: a dataset used to create the models, and a dataset used to validate the models
+
+The test data is available at https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv 
+
+The testing dataset include 160 variables and 20 observations.The goal of this analysis is to correctly predict the class for each observation in the testing data.
+
+##Variable Selection
+Some variables in the datasets were not used in the analysis.  The variable type and usage in the model is summarized below:
+
+Variable Type  |  Used in analysis | Reason
+---------------------|--------- | -----------------------------------------
+Class | Yes | The variable that the model attempts to predict
+Roll, pitch, and yaw of each of the 4 sensors | Yes | Assumed to be important variables
+Acceleration in X, Y, and Z of each of the 4 sensors | Yes | Assumed to be important variables 
+Participant Name | No | Not relevent to the analysis
+Time of observation | No | Not relevent to the analysis
+Total acceleration (RMS of X,Y, and Z) | No | Redundant data of acceleration X, Y, Z
+Raw magnetic compass data | No | Redundant data of roll, pitch and yaw in X, Y, Z
+Raw gyro data | No | Redundant data of roll, pitch, yaw, and acceleration in X, Y, Z
+Standard Deviation of measurement data per activity | No | NA or missing for most observations
+Mean of measurement data per activity | No | NA or missing for most observations
+Variances of measurement data per activity | No | | NA or missing for most observations
+Maximums of measurement data per activity | No | NA or missing for most observations
+Kurtosis of measurement data per activity | No | NA or missing for most observations
+Skewness of measurement data per activity | No | NA or missing for most observations
+
+##Setup for analysis
+This code loads R libraries that are used in the analysis. 
+```{r analysissetup, warning=FALSE,message=FALSE}
+library(caret)
+library(tictoc)
+library(parallel)
+library(doParallel)
+library(ggplot2)
+
+#set up parallel processing
+cluster <- makeCluster(detectCores() - 1) 
+registerDoParallel(cluster)
+```
+
+##Loading and Cleaning the Data
+The below code reads the data from the dataset files and selects the variables used for the model mentioned above.  
+
+In addition, the training set is randomly split into two datasets: a dataset used to create the models, and a dataset used to validate the models.  The training dataset is set to be 75% of the original dataset, and the validation dataset consists of the remaining 25%.  Due to the use of random numbers in some of the operations, a random seed is set before each such operation.
+```{r Load_and_Clean}
+training_raw <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+
+# make dataframe of training variables to be analyzed
+training_full <- subset(training_raw, select = c(
+      classe,
+      roll_belt,
+      pitch_belt,
+      yaw_belt,
+      accel_belt_x,
+      accel_belt_y,
+      accel_belt_z,
+      roll_arm,
+      pitch_arm,
+      yaw_arm,
+      accel_arm_x,
+      accel_arm_y,
+      accel_arm_z,
+      roll_dumbbell,
+      pitch_dumbbell,
+      yaw_dumbbell,
+      accel_dumbbell_x,
+      accel_dumbbell_y,
+      accel_dumbbell_z,
+      roll_forearm,
+      pitch_forearm,
+      yaw_forearm,
+      accel_forearm_x,
+      accel_forearm_y,
+      accel_forearm_z
+))
+
+#remove incomplete cases (NAs) from training set 
+training_full <- training_full[complete.cases(training_full),]
+
+# make dataframe of training variables to be analyzed
+testing <- subset(testing, select = c(
+      roll_belt,
+      pitch_belt,
+      yaw_belt,
+      accel_belt_x,
+      accel_belt_y,
+      accel_belt_z,
+      roll_arm,
+      pitch_arm,
+      yaw_arm,
+      accel_arm_x,
+      accel_arm_y,
+      accel_arm_z,
+      roll_dumbbell,
+      pitch_dumbbell,
+      yaw_dumbbell,
+      accel_dumbbell_x,
+      accel_dumbbell_y,
+      accel_dumbbell_z,
+      roll_forearm,
+      pitch_forearm,
+      yaw_forearm,
+      accel_forearm_x,
+      accel_forearm_y,
+      accel_forearm_z
+))
+
+#partition the data into training and validation datasets
+set.seed(12345)
+inTrain <- createDataPartition(training_full$classe, p = 3/4)[[1]]
+training <- training_full[inTrain,]
+validation <- training_full[-inTrain,]
+```
+
+
+##Modeling
+The following code generates models using the Random Forest, Gradiant Boosting, and Linear Discriminant Analysis methods.  A combined model is generated using these three methods using the Random Forest method.
+
+```{r Modeling}
+#Create the models
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           allowParallel = TRUE)
+set.seed(12345)
+forestmodel <- train(classe ~ ., method = "rf", data = training,  trControl = fitControl, verbose = FALSE, importance = TRUE)
+
+set.seed(12345)
+boostmodel <- train(classe ~ ., method = "gbm", data = training, trControl = fitControl, verbose = FALSE)
+
+set.seed(12345)
+ldamodel <- train(classe ~ ., method = "lda", data = training,  trControl = fitControl)
+
+#use the models to make predictions on validation data
+forestpredict <- predict(forestmodel, newdata = validation)
+boostpredict <- predict(boostmodel, newdata = validation)
+ldapredict <- predict(ldamodel, newdata = validation)
+
+#make a combined model based on above 3 prediction methods
+predDF <- data.frame(forestpredict,
+                     boostpredict,
+                     ldapredict,
+                     classe = validation$classe)
+set.seed(12345)
+combinedmodel <- train(classe ~., method = "rf", data = predDF, verbose = FALSE,  trControl = fitControl)
+combinedpredict <- predict(combinedmodel, predDF)
+```
+
+##Prediction Accuracy
+Confusion matrices are generated in order to evaluate the accuracy of each model compared to the validation dataset.
+
+```{r confusion_models}
+#Create confusion matrices
+cm_forest <- confusionMatrix(forestpredict, reference = validation$classe)
+cm_boost <- confusionMatrix(boostpredict, reference = validation$classe)
+cm_lda <- confusionMatrix(ldapredict, reference = validation$classe)
+cm_combined <- confusionMatrix(combinedpredict, reference = validation$classe)
+
+accuracy <- as.data.frame(as.list(c(
+      as.numeric(cm_forest$overall[1]),
+      as.numeric(cm_boost$overall[1]),
+      as.numeric(cm_lda $overall[1]),
+      as.numeric(cm_combined$overall[1]))))
+colnames(accuracy) <- c("Random Forest", "Gradient Boosting", "LDA", "Combined Model")
+accuracy
+```
+
+As can be seen above, the Random Forest and Gradient Boosting models have high prediction accuracy on the validation data set.  The Linear Discriminant Analysis (LDA) model is significantly less accurate. 
+
+Since the combined model is not more accurate than the Random Forest model, the Random Forest model is used for subsequent investigation.  The confusion matrix of the Random Forest model is shown below.
+
+```{r confusion_matrix}
+cm_forest
+```
+
+##Variable Importance
+A calculation of the variable importance is performed to identify the most significant predictive variables in the weighted model.  The top 10 variables with the highest importance are shown below.
+```{r importance}
+head(varImp(forestmodel)$importance)
+```
+
+The plot below shows the activity predicted by the Random Forest model vs the observed activity in the validation dataset.
+```{r plot, echo = FALSE}
+qplot(classe, forestpredict, data=validation,  color= classe, geom = c("boxplot", "jitter"), 
+      main = "Predicted vs. Observed Activity in the Validation Data", xlab = "Observed Activity", ylab = "Predicted Activity")
+```
+
+## Prediction of the Class Variable in the Test Dataset
+The goal of this model, to predict the "class" variable in the test dataset, is performed below.
+```{r testpredict}
+predict(forestmodel, newdata = testing)
+```
